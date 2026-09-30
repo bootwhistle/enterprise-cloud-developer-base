@@ -1,0 +1,117 @@
+TECH2451 - Assessment Part 1: Develop an API Endpoint
+Srian Fernando
+All commands run from the project root in Git Bash, against LocalStack.
+(awslocal = aws --endpoint-url=http://localhost:4566 with test credentials)
+
+====================================================================
+0. ENVIRONMENT SETUP
+====================================================================
+
+# Start LocalStack (Docker)
+docker run -d --name tech2451_localstack -p 4566:4566 -p 4510-4559:4510-4559 -v //var/run/docker.sock:/var/run/docker.sock localstack/localstack:2.3.2
+
+# Confirm LocalStack is healthy
+curl -s localhost:4566/_localstack/health
+awslocal sts get-caller-identity
+
+# Bootstrap the base environment (coupons API, base lambdas, users table)
+# LocalStack 2.3.2 requires the full role ARN for lambda create-function,
+# so the bootstrap is run with the role name replaced by its ARN:
+sed 's|--role "coupons_production_role"|--role "arn:aws:iam::000000000000:role/coupons_production_role"|' scripts/t0_bootstrap_environment.sh > t0_bootstrap_local.sh
+bash t0_bootstrap_local.sh
+
+====================================================================
+1-2. IAM ROLE: coupons_lambda_role  (scripts/t1_provision_coupons_lambda_role.sh)
+     Permissions: CloudWatch Logs only, for log groups /aws/lambda/coupons*
+     Policy document: scripts/coupons_lambda_role_policy.json
+====================================================================
+
+bash scripts/t1_provision_coupons_lambda_role.sh
+
+# Commands inside the script:
+awslocal iam create-policy --policy-name "coupons_lambda_policy" --policy-document file://scripts/coupons_lambda_role_policy.json
+awslocal iam create-role --role-name "coupons_lambda_role" --assume-role-policy-document file://scripts/coupons_lambda_role_assume_role_policy.json
+awslocal iam attach-role-policy --role-name "coupons_lambda_role" --policy-arn "arn:aws:iam::000000000000:policy/coupons_lambda_policy"
+
+# Verify
+awslocal iam get-role --role-name coupons_lambda_role
+awslocal iam list-attached-role-policies --role-name coupons_lambda_role
+awslocal iam get-policy-version --policy-arn arn:aws:iam::000000000000:policy/coupons_lambda_policy --version-id v1
+
+====================================================================
+3-4. LAMBDA: coupons_list  (scripts/t1_provision_coupons_list_lambda.sh)
+     Returns: { "message": "Coupons API is working successfully" }
+====================================================================
+
+bash scripts/t1_provision_coupons_list_lambda.sh
+
+# Commands inside the script:
+cd lambda/coupons_list && zip -r ../../coupons_list.zip index.js && cd ../..
+awslocal lambda create-function --function-name "coupons_list" --runtime "nodejs14.x" --zip-file fileb://coupons_list.zip --handler "index.handler" --role "arn:aws:iam::000000000000:role/coupons_lambda_role"
+awslocal lambda wait function-active-v2 --function-name "coupons_list"
+
+# Verify - invoke directly with a sample API Gateway event
+awslocal lambda get-function --function-name coupons_list
+awslocal lambda invoke --function-name coupons_list --cli-binary-format raw-in-base64-out --payload '{"httpMethod":"GET","path":"/coupons_poc","resource":"/coupons_poc"}' output/coupons_list_invoke_output.json
+cat output/coupons_list_invoke_output.json
+
+====================================================================
+5. API GATEWAY: GET /coupons_poc on the "coupons" API  (scripts/t1_provision_coupons_endpoint.sh)
+====================================================================
+
+bash scripts/t1_provision_coupons_endpoint.sh
+
+# Commands inside the script:
+API_ID=$(awslocal apigateway get-rest-apis --region us-east-1 --query "items[?name==\`coupons\`].id" --output text)
+ROOT_RESOURCE_ID=$(awslocal apigateway get-resources --rest-api-id ${API_ID} --query 'items[?path==`/`].id' --output text --region us-east-1)
+awslocal apigateway create-resource --region us-east-1 --rest-api-id ${API_ID} --parent-id ${ROOT_RESOURCE_ID} --path-part "coupons_poc"
+COUPONS_POC_RESOURCE_ID=$(awslocal apigateway get-resources --region us-east-1 --rest-api-id ${API_ID} --query "items[?path==\`/coupons_poc\`].id" --output text)
+awslocal apigateway put-method --region us-east-1 --rest-api-id ${API_ID} --resource-id ${COUPONS_POC_RESOURCE_ID} --http-method GET --authorization-type "NONE"
+COUPONS_LIST_LAMBDA_ARN=$(awslocal lambda list-functions --region us-east-1 --query "Functions[?FunctionName==\`coupons_list\`].FunctionArn" --output text)
+awslocal apigateway put-integration --region us-east-1 --rest-api-id ${API_ID} --resource-id ${COUPONS_POC_RESOURCE_ID} --http-method GET --type AWS_PROXY --integration-http-method POST --uri arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${COUPONS_LIST_LAMBDA_ARN}/invocations --passthrough-behavior WHEN_NO_MATCH
+awslocal lambda add-permission --region us-east-1 --function-name "coupons_list" --statement-id "apigateway-get-coupons_poc" --action "lambda:InvokeFunction" --principal "apigateway.amazonaws.com" --source-arn "arn:aws:execute-api:us-east-1:000000000000:${API_ID}/*/GET/coupons_poc"
+awslocal apigateway create-deployment --region us-east-1 --rest-api-id ${API_ID} --stage-name local
+
+# Verify - call the endpoint
+API_ID=$(awslocal apigateway get-rest-apis --query "items[?name==\`coupons\`].id" --output text)
+curl -i "http://${API_ID}.execute-api.localhost.localstack.cloud:4566/local/coupons_poc"
+curl -s "http://${API_ID}.execute-api.localhost.localstack.cloud:4566/local/coupons_poc" > output/coupons_poc_response.json
+
+====================================================================
+6. UNIT TEST  (lambda/coupons_list/tests/index.spec.js)
+====================================================================
+
+cd lambda/coupons_list
+npm install
+npm test
+npx jest --json --outputFile=../../output/unit_test_results.json
+cd ../..
+
+====================================================================
+7. NEWMAN TEST  (newman_tests/coupons_newman.json)
+====================================================================
+
+npx newman run newman_tests/coupons_newman.json --env-var api_id=${API_ID}
+npx newman run newman_tests/coupons_newman.json --env-var api_id=${API_ID} -r cli,json --reporter-json-export output/newman_results.json
+
+====================================================================
+OUTPUT FILES (output/)
+====================================================================
+
+awslocal iam get-role --role-name coupons_lambda_role > output/iam_role.json
+awslocal iam get-policy-version --policy-arn arn:aws:iam::000000000000:policy/coupons_lambda_policy --version-id v1 > output/iam_policy.json
+
+  output/iam_role.json                    - coupons_lambda_role details
+  output/iam_policy.json                  - CloudWatch-only policy attached to the role
+  output/coupons_list_invoke_output.json  - direct lambda invocation result
+  output/coupons_poc_response.json        - GET /coupons_poc response
+  output/unit_test_results.json           - jest unit test results
+  output/newman_results.json              - newman API test results
+
+====================================================================
+SUBMISSION
+====================================================================
+
+git add -A
+git commit -m "Project 1: Develop an API endpoint (GET /coupons_poc)"
+git push origin main

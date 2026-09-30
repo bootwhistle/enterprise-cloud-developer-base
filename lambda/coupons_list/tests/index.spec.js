@@ -1,5 +1,4 @@
 const { handler } = require('../index.js');
-const expectedCoupons = require('../../../samples/t1_sample_coupons_list_response.json');
 
 // Minimal API Gateway proxy event for GET /coupons_poc
 const apiGatewayEvent = {
@@ -33,10 +32,12 @@ describe('Coupon list', () => {
     expect(typeof response.body).toBe('string');
   });
 
-  test('Should return the sample coupons list', async () => {
+  test('Should return the success message', async () => {
+    const expectedResponse = { message: 'Coupons API is working successfully' };
+
     const response = await handler(apiGatewayEvent, null);
     const responseParsed = JSON.parse(response.body);
 
-    expect(responseParsed).toStrictEqual(expectedCoupons);
+    expect(responseParsed).toStrictEqual(expectedResponse);
   });
 });

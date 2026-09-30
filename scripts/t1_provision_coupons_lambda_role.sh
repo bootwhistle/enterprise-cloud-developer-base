@@ -9,7 +9,7 @@ function fail() {
   exit 1
 }
 
-echo "Creating ${POLICY_NAME} policy (CloudWatch: /aws/lambda/coupons*, DynamoDB: coupons table)"
+echo "Creating ${POLICY_NAME} policy (CloudWatch: /aws/lambda/coupons*)"
 awslocal iam create-policy \
   --policy-name "${POLICY_NAME}" \
   --policy-document file://scripts/coupons_lambda_role_policy.json

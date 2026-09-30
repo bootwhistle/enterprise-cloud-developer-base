@@ -1,0 +1,24 @@
+{
+    "Role": {
+        "Path": "/",
+        "RoleName": "coupons_lambda_role",
+        "RoleId": "AROAQAAAAAAAK7EOXXI6R",
+        "Arn": "arn:aws:iam::000000000000:role/coupons_lambda_role",
+        "CreateDate": "2026-09-30T02:17:29.121000+00:00",
+        "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": "lambda.amazonaws.com"
+                    },
+                    "Action": "sts:AssumeRole"
+                }
+            ]
+        },
+        "MaxSessionDuration": 3600,
+        "RoleLastUsed": {}
+    }
+}
