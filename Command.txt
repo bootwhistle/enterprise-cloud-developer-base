@@ -115,3 +115,130 @@ SUBMISSION
 git add -A
 git commit -m "Project 1: Develop an API endpoint (GET /coupons_poc)"
 git push origin main
+
+
+####################################################################
+TECH2451 - Assessment Part 2: Integrate Data Storage
+Srian Fernando
+All commands run from the project root in Git Bash, against LocalStack.
+####################################################################
+
+====================================================================
+0. ENVIRONMENT SETUP  (LocalStack has no persistence - start fresh)
+====================================================================
+
+# Remove deployment zips left over from earlier runs. "zip -r" adds to an
+# existing archive, so a stale zip doubles in size and LocalStack rejects it.
+rm -f ./*.zip
+
+docker restart tech2451_localstack
+curl -s localhost:4566/_localstack/health
+
+# Bootstrap (creates the coupons API with GET/PUT /coupons/{id},
+# the coupons_get_by_id and coupons_update lambdas, and the users table)
+sed 's|--role "coupons_production_role"|--role "arn:aws:iam::000000000000:role/coupons_production_role"|' scripts/t0_bootstrap_environment.sh > t0_bootstrap_local.sh
+bash t0_bootstrap_local.sh
+
+====================================================================
+1. DYNAMODB TABLE: coupons  (scripts/t2_create_dynamodb_table.sh)
+   Capacity (provisioned, 1 KB average item):
+     Reads : 50 eventually consistent reads/s. 1 RCU = 2 eventually
+             consistent reads/s of up to 4 KB -> 50 / 2 = 25 RCU
+     Writes: 10 writes/s. 1 WCU = 1 write/s of up to 1 KB -> 10 WCU
+====================================================================
+
+bash scripts/t2_create_dynamodb_table.sh
+
+# Commands inside the script:
+awslocal dynamodb create-table --table-name "coupons" --attribute-definitions AttributeName=coupon_id,AttributeType=S --key-schema AttributeName=coupon_id,KeyType=HASH --provisioned-throughput ReadCapacityUnits=25,WriteCapacityUnits=10
+awslocal dynamodb wait table-exists --table-name "coupons"
+awslocal dynamodb put-item --table-name "coupons" --item '{"coupon_id":{"S":"319326de971100158f6fa0daeec978fba1f17e4b"}, ...}'
+#   (sample coupon from samples/t2_coupons_get_by_id_response.json - full item in the script)
+
+# Verify
+awslocal dynamodb describe-table --table-name coupons
+awslocal dynamodb scan --table-name coupons
+
+====================================================================
+2-3. LAMBDA: coupons_get_by_id  (scripts/t2_update_coupons_get_by_id_lambda.sh)
+     GET /coupons/{id} - reads the coupon whose coupon_id = path parameter "id"
+     200 coupon | 404 not found | 400 missing id | 500 DynamoDB error
+====================================================================
+
+# Unit tests (DynamoDB mocked with aws-sdk-mock)
+npm test --prefix ./lambda/coupons_get_by_id
+
+bash scripts/t2_update_coupons_get_by_id_lambda.sh
+
+# Commands inside the script:
+cd lambda/coupons_get_by_id && zip -r ../../coupons_get_by_id.zip index.js && cd ../..
+awslocal lambda update-function-code --function-name "coupons_get_by_id" --zip-file fileb://coupons_get_by_id.zip
+awslocal lambda wait function-updated-v2 --function-name "coupons_get_by_id"
+
+# Verify through API Gateway
+API_ID=$(awslocal apigateway get-rest-apis --query "items[?name==\`coupons\`].id" --output text)
+API_URL="http://${API_ID}.execute-api.localhost.localstack.cloud:4566/local"
+curl -i "${API_URL}/coupons/319326de971100158f6fa0daeec978fba1f17e4b"
+curl -i "${API_URL}/coupons/does-not-exist"                                   # 404
+
+====================================================================
+4a. LAMBDA: coupons_update  (scripts/t2_update_coupons_update_lambda.sh)
+     PUT /coupons/{id} - updates the coupon whose coupon_id = path parameter "id"
+     Body: JSON with any of title, description, coupon_code, campaign_id,
+           provider_id, provider_name, start_date, end_date
+     200 updated coupon | 404 not found | 400 missing id / bad JSON / no fields
+====================================================================
+
+npm test --prefix ./lambda/coupons_update
+
+bash scripts/t2_update_coupons_update_lambda.sh
+
+# Commands inside the script:
+cd lambda/coupons_update && zip -r ../../coupons_update.zip index.js && cd ../..
+awslocal lambda update-function-code --function-name "coupons_update" --zip-file fileb://coupons_update.zip
+awslocal lambda wait function-updated-v2 --function-name "coupons_update"
+
+# Verify through API Gateway
+curl -i -X PUT "${API_URL}/coupons/319326de971100158f6fa0daeec978fba1f17e4b" -H "Content-Type: application/json" -d '{"title":"Save 25% on Fairmont hotels","coupon_code":"SAVE25"}'
+curl -i "${API_URL}/coupons/319326de971100158f6fa0daeec978fba1f17e4b"          # shows the new values
+curl -i -X PUT "${API_URL}/coupons/does-not-exist" -H "Content-Type: application/json" -d '{"title":"x"}'   # 404
+
+====================================================================
+4b. GLOBAL SECONDARY INDEX on provider_id + campaign_id
+    (scripts/t2_add_index_to_dynamodb_table.sh)
+====================================================================
+
+bash scripts/t2_add_index_to_dynamodb_table.sh
+
+# Commands inside the script:
+awslocal dynamodb update-table --table-name "coupons" --attribute-definitions AttributeName=provider_id,AttributeType=S AttributeName=campaign_id,AttributeType=S --global-secondary-index-updates '[{"Create":{"IndexName":"provider_id-campaign_id-index","KeySchema":[{"AttributeName":"provider_id","KeyType":"HASH"},{"AttributeName":"campaign_id","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"},"ProvisionedThroughput":{"ReadCapacityUnits":25,"WriteCapacityUnits":10}}}]'
+awslocal dynamodb wait table-exists --table-name "coupons"
+
+# Verify - query by provider and campaign through the index (no table scan)
+awslocal dynamodb query --table-name coupons --index-name provider_id-campaign_id-index --key-condition-expression "provider_id = :p AND campaign_id = :c" --expression-attribute-values '{":p":{"S":"FAIRMONT"},":c":{"S":"CHRISTMAS2022"}}'
+
+====================================================================
+OUTPUT FILES (output/)
+====================================================================
+
+awslocal dynamodb describe-table --table-name coupons > output/t2_dynamodb_table.json
+curl -s "${API_URL}/coupons/319326de971100158f6fa0daeec978fba1f17e4b" > output/t2_coupons_get_by_id_response.json
+curl -s -X PUT "${API_URL}/coupons/319326de971100158f6fa0daeec978fba1f17e4b" -H "Content-Type: application/json" -d '{"title":"Save 25% on Fairmont hotels","coupon_code":"SAVE25"}' > output/t2_coupons_update_response.json
+awslocal dynamodb query --table-name coupons --index-name provider_id-campaign_id-index --key-condition-expression "provider_id = :p AND campaign_id = :c" --expression-attribute-values '{":p":{"S":"FAIRMONT"},":c":{"S":"CHRISTMAS2022"}}' > output/t2_index_query.json
+cd lambda/coupons_get_by_id && npx jest --json --outputFile=../../output/t2_get_by_id_unit_test_results.json && cd ../..
+cd lambda/coupons_update && npx jest --json --outputFile=../../output/t2_update_unit_test_results.json && cd ../..
+
+  output/t2_dynamodb_table.json                - table, key schema, 25 RCU / 10 WCU, GSI
+  output/t2_coupons_get_by_id_response.json    - GET /coupons/{id} response
+  output/t2_coupons_update_response.json       - PUT /coupons/{id} response
+  output/t2_index_query.json                   - query through provider_id-campaign_id-index
+  output/t2_get_by_id_unit_test_results.json   - jest results for coupons_get_by_id
+  output/t2_update_unit_test_results.json      - jest results for coupons_update
+
+====================================================================
+SUBMISSION
+====================================================================
+
+git add -A
+git commit -m "Project 2: Integrate data storage (DynamoDB coupons table, get by id, update, GSI)"
+git push origin main

@@ -1,0 +1,65 @@
+{
+    "Table": {
+        "AttributeDefinitions": [
+            {
+                "AttributeName": "coupon_id",
+                "AttributeType": "S"
+            },
+            {
+                "AttributeName": "provider_id",
+                "AttributeType": "S"
+            },
+            {
+                "AttributeName": "campaign_id",
+                "AttributeType": "S"
+            }
+        ],
+        "TableName": "coupons",
+        "KeySchema": [
+            {
+                "AttributeName": "coupon_id",
+                "KeyType": "HASH"
+            }
+        ],
+        "TableStatus": "ACTIVE",
+        "CreationDateTime": "2026-10-19T03:00:46.905000-06:00",
+        "ProvisionedThroughput": {
+            "LastIncreaseDateTime": "1969-12-31T17:00:00-07:00",
+            "LastDecreaseDateTime": "1969-12-31T17:00:00-07:00",
+            "NumberOfDecreasesToday": 0,
+            "ReadCapacityUnits": 25,
+            "WriteCapacityUnits": 10
+        },
+        "TableSizeBytes": 303,
+        "ItemCount": 1,
+        "TableArn": "arn:aws:dynamodb:us-east-1:000000000000:table/coupons",
+        "TableId": "fca8eb7f-3774-40fd-88b0-56603cce785e",
+        "GlobalSecondaryIndexes": [
+            {
+                "IndexName": "provider_id-campaign_id-index",
+                "KeySchema": [
+                    {
+                        "AttributeName": "provider_id",
+                        "KeyType": "HASH"
+                    },
+                    {
+                        "AttributeName": "campaign_id",
+                        "KeyType": "RANGE"
+                    }
+                ],
+                "Projection": {
+                    "ProjectionType": "ALL"
+                },
+                "IndexStatus": "ACTIVE",
+                "ProvisionedThroughput": {
+                    "ReadCapacityUnits": 25,
+                    "WriteCapacityUnits": 10
+                },
+                "IndexSizeBytes": 303,
+                "ItemCount": 1,
+                "IndexArn": "arn:aws:dynamodb:ddblocal:000000000000:table/coupons/index/provider_id-campaign_id-index"
+            }
+        ],
+        "Replicas": []
+    }
+}

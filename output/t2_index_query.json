@@ -1,0 +1,36 @@
+{
+    "Items": [
+        {
+            "end_date": {
+                "S": "1672444800"
+            },
+            "coupon_code": {
+                "S": "SAVE25"
+            },
+            "coupon_id": {
+                "S": "319326de971100158f6fa0daeec978fba1f17e4b"
+            },
+            "description": {
+                "S": "Save 20% on Fairmont hotels when you book your stay through December 2022"
+            },
+            "provider_id": {
+                "S": "FAIRMONT"
+            },
+            "provider_name": {
+                "S": "Fairmont Hotels and Resorts"
+            },
+            "title": {
+                "S": "Save 25% on Fairmont hotels"
+            },
+            "campaign_id": {
+                "S": "CHRISTMAS2022"
+            },
+            "start_date": {
+                "S": "1669852800"
+            }
+        }
+    ],
+    "Count": 1,
+    "ScannedCount": 1,
+    "ConsumedCapacity": null
+}
