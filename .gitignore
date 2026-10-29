@@ -7,3 +7,5 @@ npm-debug.log
 **/npm-debug.log
 **/test/**/*.log
 *.zip
+build/
+t0_bootstrap_local.sh

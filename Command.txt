@@ -242,3 +242,116 @@ SUBMISSION
 git add -A
 git commit -m "Project 2: Integrate data storage (DynamoDB coupons table, get by id, update, GSI)"
 git push origin main
+
+
+####################################################################
+TECH2451 - Assessment Part 3: Secure the Application Program Interface
+Srian Fernando
+All commands run from the project root in Git Bash, against LocalStack.
+####################################################################
+
+====================================================================
+0. ENVIRONMENT SETUP  (LocalStack has no persistence - start fresh)
+====================================================================
+
+rm -f ./*.zip
+
+docker restart tech2451_localstack
+curl -s localhost:4566/_localstack/health
+
+# Bootstrap (creates the users table with tester1/tester2 - bcrypt hashes,
+# 12 rounds - the coupons_get_token and coupons_to_secure lambdas, and the
+# POST /token and GET /coupons/to_secure endpoints)
+sed 's|--role "coupons_production_role"|--role "arn:aws:iam::000000000000:role/coupons_production_role"|' scripts/t0_bootstrap_environment.sh > t0_bootstrap_local.sh
+bash t0_bootstrap_local.sh
+
+# LocalStack 2.3.2 only: it routes a request to the FIRST matching resource in
+# creation order, so GET /coupons/to_secure was sent to coupons_get_by_id
+# (/coupons/{id} with id = "to_secure") and returned 500. Real API Gateway
+# prefers the literal path. This recreates /coupons/{id} last (same GET/PUT
+# integrations) so the literal /coupons/* paths are matched first.
+bash scripts/localstack_fix_route_order.sh
+
+# The seeded users (password field is the bcrypt hash, never the plain text)
+awslocal dynamodb scan --table-name users
+
+====================================================================
+1. LAMBDA: coupons_get_token  (scripts/t3_update_coupons_get_token_lambda.sh)
+   POST /token  body {"username": "...", "password": "..."}
+   - reads the user from the "users" table
+   - bcrypt.compare(password, stored hash)   (hash = bcrypt, 12 rounds)
+   - signs a JWT (HS256) with the secret 0HXc4w5NEzA61HkV, expires in 3600 s
+   200 {"token": "...", "expiresIn": 3600}
+   403 wrong password or unknown user | 400 missing fields / bad JSON
+   Libraries: bcryptjs (pure JS bcrypt), jsonwebtoken
+====================================================================
+
+npm install --prefix ./lambda/coupons_get_token
+npm test --prefix ./lambda/coupons_get_token
+
+bash scripts/t3_update_coupons_get_token_lambda.sh
+
+# Commands inside the script (only production dependencies are packaged):
+mkdir -p build/coupons_get_token && cp lambda/coupons_get_token/{index.js,package.json,package-lock.json} build/coupons_get_token/
+npm ci --omit=dev --prefix build/coupons_get_token
+cd build/coupons_get_token && zip -r ../../coupons_get_token.zip index.js node_modules && cd ../..
+awslocal lambda update-function-code --function-name "coupons_get_token" --zip-file fileb://coupons_get_token.zip
+awslocal lambda wait function-updated-v2 --function-name "coupons_get_token"
+
+# Verify through API Gateway
+API_ID=$(awslocal apigateway get-rest-apis --query "items[?name==\`coupons\`].id" --output text)
+API_URL="http://${API_ID}.execute-api.localhost.localstack.cloud:4566/local"
+curl -i -X POST "${API_URL}/token" -H "Content-Type: application/json" -d @samples/t3_sample_coupons_get_token_event.json     # 200 + token
+curl -i -X POST "${API_URL}/token" -H "Content-Type: application/json" -d '{"username":"tester1","password":"wrong-password"}'   # 403
+curl -i -X POST "${API_URL}/token" -H "Content-Type: application/json" -d '{"username":"nobody","password":"Pc4RM0AMKy5aSGfD"}'  # 403
+
+====================================================================
+2. LAMBDA: coupons_to_secure  (scripts/t3_update_coupons_to_secure_lambda.sh)
+   GET /coupons/to_secure  header "Authorization: Bearer <token>"
+   - jwt.verify(token, 0HXc4w5NEzA61HkV, HS256)
+   200 token valid | 403 missing, malformed, wrongly signed or expired token
+====================================================================
+
+npm install --prefix ./lambda/coupons_to_secure
+npm test --prefix ./lambda/coupons_to_secure
+
+bash scripts/t3_update_coupons_to_secure_lambda.sh
+
+# Commands inside the script:
+mkdir -p build/coupons_to_secure && cp lambda/coupons_to_secure/{index.js,package.json,package-lock.json} build/coupons_to_secure/
+npm ci --omit=dev --prefix build/coupons_to_secure
+cd build/coupons_to_secure && zip -r ../../coupons_to_secure.zip index.js node_modules && cd ../..
+awslocal lambda update-function-code --function-name "coupons_to_secure" --zip-file fileb://coupons_to_secure.zip
+awslocal lambda wait function-updated-v2 --function-name "coupons_to_secure"
+
+# Verify through API Gateway
+TOKEN=$(curl -s -X POST "${API_URL}/token" -H "Content-Type: application/json" -d @samples/t3_sample_coupons_get_token_event.json | sed 's/.*"token":"\([^"]*\)".*/\1/')
+curl -i "${API_URL}/coupons/to_secure" -H "Authorization: Bearer ${TOKEN}"         # 200
+curl -i "${API_URL}/coupons/to_secure"                                              # 403 no token
+curl -i "${API_URL}/coupons/to_secure" -H "Authorization: Bearer ${TOKEN}x"        # 403 bad signature
+
+====================================================================
+OUTPUT FILES (output/)
+====================================================================
+
+curl -s -X POST "${API_URL}/token" -H "Content-Type: application/json" -d @samples/t3_sample_coupons_get_token_event.json > output/t3_get_token_response.json
+curl -s -X POST "${API_URL}/token" -H "Content-Type: application/json" -d '{"username":"tester1","password":"wrong-password"}' -w '\n{"statusCode": %{http_code}}\n' > output/t3_get_token_invalid_response.json
+curl -s "${API_URL}/coupons/to_secure" -H "Authorization: Bearer ${TOKEN}" > output/t3_to_secure_valid_token_response.json
+curl -s "${API_URL}/coupons/to_secure" -H "Authorization: Bearer ${TOKEN}x" -w '\n{"statusCode": %{http_code}}\n' > output/t3_to_secure_invalid_token_response.json
+cd lambda/coupons_get_token && npx jest --json --outputFile=../../output/t3_get_token_unit_test_results.json && cd ../..
+cd lambda/coupons_to_secure && npx jest --json --outputFile=../../output/t3_to_secure_unit_test_results.json && cd ../..
+
+  output/t3_get_token_response.json                - POST /token with valid credentials (token + expiresIn)
+  output/t3_get_token_invalid_response.json        - POST /token with a wrong password (403)
+  output/t3_to_secure_valid_token_response.json    - GET /coupons/to_secure with the token (200)
+  output/t3_to_secure_invalid_token_response.json  - GET /coupons/to_secure with a tampered token (403)
+  output/t3_get_token_unit_test_results.json       - jest results for coupons_get_token
+  output/t3_to_secure_unit_test_results.json       - jest results for coupons_to_secure
+
+====================================================================
+SUBMISSION
+====================================================================
+
+git add -A
+git commit -m "Project 3: Secure the API (JWT token endpoint, bcrypt check, token-protected route)"
+git push origin main
